@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DOCX to HTML Source Tool</title>
+  <script src="https://unpkg.com/mammoth@1.7.2/mammoth.browser.min.js"></script>
+  <style>
+    :root{
+      --bg:#f3f4f8;
+      --card:#ffffff;
+      --text:#15243a;
+      --muted:#5d6b82;
+      --line:#d7deea;
+      --accent:#12213a;
+      --danger:#c62f2f;
+      --ok:#18794e;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Arial,Helvetica,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+      padding:28px;
+    }
+    .wrap{
+      max-width:980px;
+      margin:0 auto;
+      background:var(--card);
+      border-radius:22px;
+      padding:26px 24px 24px;
+      box-shadow:0 8px 30px rgba(16,24,40,.06);
+    }
+    h1{
+      margin:0 0 12px;
+      font-size:28px;
+      line-height:1.2;
+    }
+    .sub{
+      margin:0 0 20px;
+      color:var(--muted);
+      font-size:15px;
+    }
+    .box{
+      border:2px dashed var(--line);
+      border-radius:16px;
+      padding:20px;
+      background:#fafbfe;
+    }
+    .row{
+      display:flex;
+      gap:12px;
+      align-items:center;
+      flex-wrap:wrap;
+      margin-bottom:14px;
+    }
+    .btn,.file-label{
+      appearance:none;
+      border:0;
+      background:var(--accent);
+      color:#fff;
+      border-radius:12px;
+      padding:12px 18px;
+      font-size:15px;
+      cursor:pointer;
+      font-weight:700;
+    }
+    .btn.secondary{
+      background:#e9edf5;
+      color:var(--text);
+      border:1px solid var(--line);
+    }
+    .file-label{
+      display:inline-block;
+    }
+    input[type="file"]{display:none}
+    .filename{
+      color:var(--muted);
+      font-size:14px;
+      word-break:break-word;
+    }
+    .status{
+      min-height:24px;
+      margin:10px 0 14px;
+      font-size:15px;
+      font-weight:700;
+    }
+    .status.error{color:var(--danger)}
+    .status.ok{color:var(--ok)}
+    textarea{
+      width:100%;
+      min-height:420px;
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:16px;
+      font-family:Consolas,Monaco,monospace;
+      font-size:14px;
+      line-height:1.55;
+      resize:vertical;
+      background:#fff;
+      color:#334155;
+    }
+    .small{
+      margin-top:12px;
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>DOCX to HTML Source Tool</h1>
+    <p class="sub">Pure browser version. No Python, no local server. Open this HTML file in your browser, upload a DOCX, then copy or download the converted source.</p>
+
+    <div class="box">
+      <div class="row">
+        <label class="file-label" for="docxFile">Choose DOCX</label>
+        <input id="docxFile" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+        <span id="filename" class="filename">No file selected</span>
+      </div>
+
+      <div class="row">
+        <button id="convertBtn" class="btn">Convert</button>
+        <button id="copyBtn" class="btn secondary" type="button">Copy HTML</button>
+        <button id="downloadBtn" class="btn secondary" type="button">Download HTML</button>
+      </div>
+
+      <div id="status" class="status"></div>
+      <textarea id="output" placeholder="Converted HTML will appear here..."></textarea>
+
+      <div class="small">
+        Note: this file uses Mammoth.js in the browser to read DOCX content. The first load needs internet access so the library can load. After that, conversion runs in your browser only.
+      </div>
+    </div>
+  </div>
+
+<script>
+const fileInput = document.getElementById("docxFile");
+const filenameEl = document.getElementById("filename");
+const outputEl = document.getElementById("output");
+const statusEl = document.getElementById("status");
+const convertBtn = document.getElementById("convertBtn");
+const copyBtn = document.getElementById("copyBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+
+fileInput.addEventListener("change", () => {
+  filenameEl.textContent = fileInput.files.length ? fileInput.files[0].name : "No file selected";
+});
+
+function setStatus(msg, type="") {
+  statusEl.className = "status" + (type ? " " + type : "");
+  statusEl.textContent = msg || "";
+}
+
+function decodeHtml(html) {
+  const t = document.createElement("textarea");
+  t.innerHTML = html;
+  return t.value;
+}
+
+function textOnly(el) {
+  return (el.textContent || "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function isStatsLine(text) {
+  return /^(=+\s*START stats\s*=+|=+\s*END stats\s*=+|Historical Price:|Forecast Price:|CAGR:|Currency:|Unit:)/i.test(text);
+}
+
+function isAllStrongParagraph(el) {
+  if (!el || el.tagName !== "P") return false;
+  const html = el.innerHTML.trim();
+  if (!html) return false;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  if (tmp.childNodes.length !== 1) return false;
+  const only = tmp.firstChild;
+  return only.nodeType === Node.ELEMENT_NODE && only.tagName === "STRONG";
+}
+
+function hasNestedList(el) {
+  return !!el.querySelector("ul,ol");
+}
+
+function normalizeInlineHtml(html) {
+  return html
+    .replace(/<mark\b[^>]*>/gi, "")
+    .replace(/<\/mark>/gi, "")
+    .replace(/\s+<\/(strong|em|a)>/gi, "</$1>")
+    .replace(/<(\/?)(b)\b/gi, "<$1strong")
+    .replace(/<(\/?)(i)\b/gi, "<$1em")
+    .trim();
+}
+
+function buildProcessedHtml(rawHtml) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString("<div id='root'>" + rawHtml + "</div>", "text/html");
+  const root = doc.getElementById("root");
+  const out = [];
+  let previousWasH3 = false;
+
+  const children = Array.from(root.children);
+  for (const el of children) {
+    const tag = el.tagName;
+    const text = textOnly(el);
+
+    if (!text) continue;
+    if (isStatsLine(text)) continue;
+
+    if (tag === "UL" || tag === "OL") {
+      const listTag = tag.toLowerCase();
+      const items = Array.from(el.children)
+        .filter(li => li.tagName === "LI")
+        .map(li => {
+          if (hasNestedList(li)) {
+            const clone = li.cloneNode(true);
+            return "<li>" + normalizeInlineHtml(clone.innerHTML) + "</li>";
+          }
+          return "<li>" + normalizeInlineHtml(li.innerHTML) + "</li>";
+        });
+      if (items.length) out.push(`<${listTag}>\n\t${items.join("\n\t")}\n</${listTag}>`);
+      previousWasH3 = false;
+      continue;
+    }
+
+    if (isAllStrongParagraph(el)) {
+      const strongHtml = normalizeInlineHtml(el.innerHTML);
+      if (!previousWasH3) {
+        out.push(`<h3>${normalizeInlineHtml(el.querySelector("strong").innerHTML)}</h3>`);
+        previousWasH3 = true;
+      } else {
+        out.push(`<p>${strongHtml}</p>`);
+        previousWasH3 = false;
+      }
+      continue;
+    }
+
+    if (/^•\s*/.test(text)) {
+      out.push("<ul>\n\t<li>" + normalizeInlineHtml(text.replace(/^•\s*/, "")) + "</li>\n</ul>");
+      previousWasH3 = false;
+      continue;
+    }
+
+    const cleanHtml = normalizeInlineHtml(el.innerHTML);
+    if (tag === "P") {
+      out.push(`<p>${cleanHtml}</p>`);
+    } else if (/^H[1-6]$/.test(tag)) {
+      out.push(`<h3>${normalizeInlineHtml(el.innerHTML)}</h3>`);
+    } else {
+      out.push(`<p>${cleanHtml}</p>`);
+    }
+    previousWasH3 = false;
+  }
+
+  return out.join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function convertFile() {
+  const file = fileInput.files[0];
+  if (!file) {
+    setStatus("Please choose a DOCX file first.", "error");
+    return;
+  }
+
+  if (!window.mammoth) {
+    setStatus("Mammoth.js did not load. Check your internet connection and reopen the HTML file.", "error");
+    return;
+  }
+
+  try {
+    setStatus("Converting...", "");
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await window.mammoth.convertToHtml(
+      { arrayBuffer },
+      {
+        includeDefaultStyleMap: true,
+        ignoreEmptyParagraphs: true
+      }
+    );
+
+    const processed = buildProcessedHtml(result.value || "");
+    outputEl.value = processed;
+    const warnings = (result.messages || []).filter(m => m.type === "warning");
+    setStatus(warnings.length ? "Converted with minor formatting warnings." : "Conversion completed.", "ok");
+  } catch (err) {
+    console.error(err);
+    setStatus("Conversion failed: " + (err.message || err), "error");
+  }
+}
+
+async function copyHtml() {
+  if (!outputEl.value.trim()) {
+    setStatus("Nothing to copy yet.", "error");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(outputEl.value);
+    setStatus("HTML copied.", "ok");
+  } catch (err) {
+    setStatus("Copy failed. You can still select and copy manually.", "error");
+  }
+}
+
+function downloadHtml() {
+  const value = outputEl.value.trim();
+  if (!value) {
+    setStatus("Nothing to download yet.", "error");
+    return;
+  }
+  const file = fileInput.files[0];
+  const baseName = file ? file.name.replace(/\.docx$/i, "") : "converted";
+  const blob = new Blob([value], { type: "text/html;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = baseName + ".html";
+  document.body.appendChild(a);
+  a.click();
+  URL.revokeObjectURL(a.href);
+  a.remove();
+  setStatus("HTML downloaded.", "ok");
+}
+
+convertBtn.addEventListener("click", convertFile);
+copyBtn.addEventListener("click", copyHtml);
+downloadBtn.addEventListener("click", downloadHtml);
+</script>
+</body>
+</html>
